@@ -10,7 +10,33 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from urllib.request import urlretrieve
 
+from selenium import webdriver
+from time import sleep
+from selenium.webdriver.chrome.options import Options
+
+
 CURRENT_DIRECTORY = os.path.dirname(__file__)
+
+from selenium import webdriver
+from time import sleep
+
+
+def screenshot(url) :
+    chrome_options = Options()
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--start-maximized')
+
+    # chrome driver 위치
+    driver = webdriver.Chrome(r"C:\Users\USER\PycharmProjects\chromedriver.exe", options=chrome_options)
+    driver.get(url)
+    sleep(1)
+
+    total_height = driver.execute_script("return document.scrollingElement.scrollHeight;")
+    driver.set_window_size(1920, total_height)
+    sleep(1)
+    driver.save_screenshot("Full_screenshot.png")
+    driver.quit()
+
 
 def downloadAsset(uri, dirname):
     print(uri)
@@ -109,6 +135,7 @@ if __name__ == "__main__":
     
     # Archive Page
     archivePage(args.url, uid)
+
 
     # Save Meta JSON
     with open(os.path.join(CURRENT_DIRECTORY, uid, "meta.json"), "w") as f:
