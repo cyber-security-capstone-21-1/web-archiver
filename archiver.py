@@ -14,12 +14,7 @@ from selenium import webdriver
 from time import sleep
 from selenium.webdriver.chrome.options import Options
 
-
 CURRENT_DIRECTORY = os.path.dirname(__file__)
-
-from selenium import webdriver
-from time import sleep
-
 
 def screenshot(url) :
     chrome_options = Options()
