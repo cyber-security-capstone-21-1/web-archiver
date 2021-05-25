@@ -8,31 +8,78 @@ from pathlib import Path
 from datetime import datetime
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-from urllib.request import urlretrieve
+from urllib.request import urlretrieve, urlopen
 
 CURRENT_DIRECTORY = os.path.dirname(__file__)
 
+mimeTypes = [
+    'text/html',
+    'application/xml',
+    'application/xhtml+xml',
+    'application/pdf',
+    'text/css',
+    'text/javascript',
+    'image/jpeg',
+    'image/png',
+    'image/gif',
+    'image/bmp',
+    'image/webp',
+    'audio/midi',
+    'audio/mpeg',
+    'audio/webm',
+    'audio/ogg',
+    'audio/wav',
+    'video/webm',
+    'video/ogg',
+    'font/opentype',
+    'font/ttf',
+    'application/octet-stream',
+    'application/font-woff',
+    'application/font-sfnt',
+    'application/vnd.ms-fontobject',
+    'image/svg+xml',
+]
+
+def getContentType(url):
+    with urlopen(url) as response:
+        info = response.info()
+        return info.get_content_type()
+
+
 def downloadAsset(uri, dirname):
-    print(uri)
-    if uri[-1] == '/':
-        del uri[-1]
-
-    o = urlparse(uri)
-
+    tUrl = uri
+    o = urlparse(tUrl)
+    contentType = ""
     targetDir = os.path.join(CURRENT_DIRECTORY, dirname, '/'.join(o.path.split('/')[1:-1]))
-    if not os.path.exists(targetDir):
-        path = Path(targetDir)
-        path.mkdir(parents=True)
 
-    urlretrieve(uri, os.path.join(targetDir, o.path.split('/')[-1]))
+    # javascript, fragment의 경우 다운로드 불필요
+    if o.scheme == "javascript" or (o.netloc == '' and o.path == ''):
+        return
 
-    # Save assets into S3
-    # encoded_string = "something".encode("utf-8")
-    # bucket_name = ""
-    # file_name = ""
-    # s3_path = f"/{file_name}"
-    # s3 = boto3.resource("s3")
-    # s3.Bucket(bucket_name).put_object(Key=s3_path, Body=encoded_string)
+    if o.scheme == "":
+        tUrl = f"https://{uri}"
+
+    try:
+        contentType = getContentType(tUrl)
+    except Exception:
+        try:
+            tUrl = f"http://{uri}"
+            contentType = getContentType(tUrl)
+        except Exception:
+            raise Exception("Error during connection")
+    else:
+        # text/html 무시
+        if contentType in mimeTypes[1:]:
+            if not os.path.exists(targetDir):
+                path = Path(targetDir)
+                path.mkdir(parents=True)
+
+            targetFile = os.path.join(targetDir, o.path.split('/')[-1])
+            if not os.path.exists(targetFile):
+                urlretrieve(uri, targetFile)
+                print(f"[Retrieved] {targetFile}")
+        else:
+            pass
 
 def archivePage(url, dirname):
     o = urlparse(url)
@@ -40,50 +87,148 @@ def archivePage(url, dirname):
     soup = BeautifulSoup(doc.text, 'lxml')
 
     srcs = soup.select("[src]")
-    styles = soup.select("[style]")
+    # srcsets = soup.select("[srcset]")
+    styleTags = soup.select("style")
+    styleAttrs = soup.select("[style]")
+    posterAttrs = soup.select("[poster]")
     hrefs = soup.select("[href]")
+    scripts = soup.select("script:not([src])")
 
-    # style 속성 처리 
-    for style in styles:
-        temp = ""
-        urls = re.findall('url\((.*?)\)', style["style"])
-        if len(urls) > 0: 
-            url = urls[0]
-            if url[1] == '/':
-                if len(url) > 1 and url[2] == '/':
-                    pass
+    # 스타일 속성 / 스타일 태그 처리
+    print('\n[Notice] 스타일 처리 시작')
+    styleRegex = 'url\((.*?)\)'
+    for parseType in [styleTags, styleAttrs, posterAttrs]:
+        for style in parseType:
+
+            if 'style' in style.attrs:
+                text = style["style"]
+            elif 'poster' in style.attrs:
+                text = style["poster"]
+            else:
+                text = style.string
+
+            for url in re.finditer(styleRegex, text):
+                url = url.group(0)[4:-1].strip('"').strip("'")
+                ot = urlparse(url)
+
+                # javascript, fragment 처리 불필요
+                if ot.scheme == "javascript" or (ot.netloc == '' and ot.path == ''):
+                    continue
+
+                if len(ot.netloc) > 0:
+                    # 절대 경로
+                    downloadAsset(url, ot.path)
+                    replaceTo = f"{ot.path}"
                 else:
-                    url = url.replace('\'', '')
-                    downloadAsset(f"{o.scheme}://{o.netloc}{url}", dirname)
-                    temp = f"url('.{url}')"
-                style["style"] = re.sub('url\((.*?)\)', temp, style["style"])
-        else:
-            pass
+                    # 상대 경로
+                    if ot.path.startswith("./"):
+                        if o.scheme == '':
+                            try:
+                                downloadAsset(f"https://{o.netloc}{o.path}{ot.path.replace('./', '')}", dirname)
+                            except Exception:
+                                try:
+                                    downloadAsset(f"http://{o.netloc}{o.path}{ot.path.replace('./', '')}", dirname)
+                                except Exception:
+                                    print(f"{o.netloc}{o.path}{ot.path.replace('./', '')} 다운로드 에러")
+                        replaceTo = f"url('{ot.path}')"
+                    elif ot.path.startswith("../"):
+                        count = ot.path.count("../")
+                        try:
+                            downloadAsset(f"https://{o.netloc}{o.path.split('/')[:-count]}{ot.path.replace('../', '')}", dirname)
+                        except Exception:
+                            try:
+                                downloadAsset(f"http://{o.netloc}{o.path.split('/')[:-count]}{ot.path.replace('../', '')}", dirname)
+                            except Exception:
+                                print(f"{o.netloc}{o.path.split('/')[:-count]}{ot.path.replace('../', '')} 다운로드 에러")
+                        replaceTo = f"url('{o.path.split('/')[:-count]}')"
+                    else:
+                        try:
+                            downloadAsset(f"https://{o.netloc}{ot.path}", dirname)
+                        except Exception:
+                            try:
+                                downloadAsset(f"http://{o.netloc}{ot.path}", dirname)
+                            except Exception:
+                                print(f"{o.netloc}{ot.path} 다운로드 에러")
+                        replaceTo = f"url('.{ot.path}')"
+                
+                text = re.sub(styleRegex, replaceTo, text)
 
-    # href 속성 처리
-    for href in hrefs:
-        temp = ""
-        if href["href"][0] == "/":
-            if len(href["href"]) > 1 and href["href"][1] == "/":
-                pass
-            else:
-                temp = f"{o.scheme}://{o.netloc}{href['href']}"
-        else:
-            temp = href["href"]
-        href["href"] = temp
+    print('\n[Notice] 링크 처리 시작')
+    # href, src 속성 처리
+    for idx, parseType in enumerate([hrefs, srcs]):
+        for data in parseType:
+            if idx == 0:
+                tLink = data["href"]
+            elif idx == 1:
+                tLink = data["src"]
 
-    # src 속성 처리
-    for src in srcs:
-        temp = ""
-        if src["src"][0] == "/":
-            if len(src["src"]) > 1 and src["src"][1] == "/":
-                pass
-            else:
-                downloadAsset(f"{o.scheme}://{o.netloc}{src['src']}", dirname)
-                temp = f".{src['src']}"
-        else:
-            temp = src["src"]
-        src["src"] = temp
+            ot = urlparse(tLink)
+            # android-app, javascript 등의 프로토콜은 생략
+            if ot.scheme in ["http", "https", ""]:
+                if len(ot.netloc) == 0:
+                    if tLink.startswith("#") or ot.fragment:
+                        continue
+                    elif ot.path.startswith("./"):
+                        tLink = f"{ot.path.replace('./', '')}"
+                    elif ot.path.startswith("../"):
+                        count = ot.path.count('../')
+                        tLink = f"{o.netloc}{o.path.split('/')[:-count]}{ot.path.replace('../', '')}"
+                    elif ot.path.startswith("/"):
+                        tLink = f"{o.netloc}{ot.path}"
+                    elif ot.path[0].isalpha():
+                        tLink = f"{o.netloc}/{ot.path}"
+
+                if ot.scheme == "":
+                    tLink = f"http://{tLink}"
+
+                try:
+                    # idx 4부터 해당하는 mimeTypes만 허용
+                    if getContentType(tLink) in mimeTypes[4:]:
+                        downloadAsset(tLink, dirname)
+                except Exception:
+                    continue
+            
+            ot = urlparse(tLink)
+            if idx == 0:
+                data["href"] = f".{ot.path}"
+            elif idx == 1:
+                data["src"] = f".{ot.path}"
+
+    # script 콘텐츠 처리
+    importRegex = r"@import\s*(url)?\s*\(?([^;]+?)\)?;"
+    for script in scripts:
+        for url in re.findall(importRegex, script.string):
+            tLink = url[-1]
+
+            ot = urlparse(tLink)
+            # android-app, javascript 등의 프로토콜은 생략
+            if ot.scheme in ["http", "https", ""]:
+                if len(ot.netloc) == 0:
+                    if tLink.startswith("#") or ot.fragment:
+                        continue
+                    elif ot.path.startswith("./"):
+                        tLink = f"{ot.path.replace('./', '')}"
+                    elif ot.path.startswith("../"):
+                        count = ot.path.count('../')
+                        tLink = f"{o.netloc}{o.path.split('/')[:-count]}{ot.path.replace('../', '')}"
+                    elif ot.path.startswith("/"):
+                        tLink = f"{o.netloc}{ot.path}"
+                    elif ot.path[0].isalpha():
+                        tLink = f"{o.netloc}/{ot.path}"
+
+                if ot.scheme == "":
+                    tLink = f"http://{tLink}"
+
+                try:
+                    # idx 4부터 해당하는 mimeTypes만 허용
+                    if getContentType(tLink) in mimeTypes[4:]:
+                        downloadAsset(tLink, dirname)
+                except Exception:
+                    continue
+
+            ot = urlparse(tLink)
+            tLink = f".{ot.path}"
+            script = re.sub(importRegex, tLink, script)
 
     # Save html File
     with open(os.path.join(CURRENT_DIRECTORY, dirname, 'index.html'), 'w') as f:
@@ -108,8 +253,10 @@ if __name__ == "__main__":
         uid = str(uuid.uuid4())
     
     # Archive Page
+    args.url = "http://www.ppomppu.co.kr/zboard/view.php?id=issue&page=1&divpage=67&no=359100" # Test URL
     archivePage(args.url, uid)
 
+    print(f"[Complete] Archived into directory - {uid}")
     # Save Meta JSON
     with open(os.path.join(CURRENT_DIRECTORY, uid, "meta.json"), "w") as f:
         json.dump({
