@@ -14,6 +14,8 @@ from urllib.request import urlretrieve, urlopen
 
 CURRENT_DIRECTORY = os.path.dirname(__file__)
 
+REQ_URL = ''
+
 mimeTypes = [
     'text/html',
     'application/xml',
@@ -79,7 +81,9 @@ def downloadAsset(uri, dirname):
             targetFile = os.path.join(targetDir, o.path.split('/')[-1])
             if not os.path.exists(targetFile):
                 urlretrieve(uri, targetFile)
-                # print(f"[Retrieved] {targetFile}")
+                if targetFile.split('.')[-1] == 'css':
+                    parseCSSURLs(targetFile, REQ_URL, dirname)
+                print(f"[Retrieved] {targetFile}")
         else:
             pass
 
@@ -241,71 +245,69 @@ def archivePage(url, dirname):
             f.write(str(soup))
     
 
-def parseCSSURLs(url, uid):
+def parseCSSURLs(file, url, uid):
     print("[Notice] CSS 내 링크 처리 시작")
     o = urlparse(url)
-    files = glob.glob(f"{os.path.join(CURRENT_DIRECTORY, uid)}/**/**")
     styleRegex = 'url\((.*?)\)'
     importRegex = r"@import\s*(url)?\s*\(?([^;]+?)\)?;"
 
-    for file in files:
-        basePath = '/'.join(file.split(uid)[-1].split('/')[:-1])
-        baseURL = f"{o.scheme}://{o.netloc}{basePath}" 
-        filename, extension = os.path.splitext(file)
-        if extension == '.css':
-            print(f" - {filename.split('/')[-1]}.css 처리 중")
+    basePath = '/'.join(file.split(uid)[-1].split('/')[:-1])
+    baseURL = f"{o.scheme}://{o.netloc}{basePath}" 
+    filename, extension = os.path.splitext(file)
+    if extension == '.css':
+        print(f" - {filename.split('/')[-1]}.css 처리 중")
 
-            content_r = open(file, 'rb')
-            encoding = chardet.detect(content_r.read())['encoding']
-            content_r.close()
-            content_r = open(file, 'rt', encoding=encoding)
+        content_r = open(file, 'rb')
+        encoding = chardet.detect(content_r.read())['encoding']
+        content_r.close()
+        content_r = open(file, 'rt', encoding=encoding)
 
-            removed_comments = re.sub(r'\/\*.*?\*\/', '', content_r.read())
+        removed_comments = re.sub(r'\/\*.*?\*\/', '', content_r.read())
 
-            for regex in [importRegex, styleRegex]:
-                for item in re.findall(regex, removed_comments):
-                    item = item.strip("'").strip('"')
-                    ot = urlparse(item)
+        for regex in [importRegex, styleRegex]:
+            for item in re.findall(regex, removed_comments):
+                item = item.strip("'").strip('"')
+                ot = urlparse(item)
 
-                    # javascript, fragment 처리 불필요
-                    if ot.scheme == "javascript" or (ot.netloc == '' and ot.path == ''):
-                        continue
+                # javascript, fragment 처리 불필요
+                if ot.scheme == "javascript" or (ot.netloc == '' and ot.path == ''):
+                    continue
 
-                    if len(ot.netloc) > 0:
-                        # 절대 경로
-                        targetFile = url
-                        replaceTo = f"{'..' * (len(basePath.split('/')[1:]) + 1)}/{ot.path}"
-                    else:
-                        # 상대 경로
-                        targetFile = ''
-                        if ot.path.startswith("./"):
-                            targetFile = urljoin(baseURL, ot.path)
-                            replaceTo = f"url('{ot.path}')"
-                        elif ot.path.startswith("../"):
-                            targetFile = urljoin(baseURL, ot.path)
-                            replaceTo = f"url('{ot.path}')"
-                        elif ot.path.startswith("/"):
-                            targetFile = urljoin(baseURL, ot.path)
+                if len(ot.netloc) > 0:
+                    # 절대 경로
+                    targetFile = url
+                    replaceTo = f"{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}"
+                else:
+                    # 상대 경로
+                    targetFile = ''
+                    if ot.path.startswith("./"):
+                        targetFile = urljoin(baseURL, ot.path)
+                        replaceTo = f"url('{ot.path}')"
+                    elif ot.path.startswith("../"):
+                        targetFile = urljoin(baseURL, ot.path)
+                        replaceTo = f"url('{ot.path}')"
+                    elif ot.path.startswith("/"):
+                        targetFile = urljoin(baseURL, ot.path)
+                        replaceTo = f"url('{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}')"
+                    elif ot.path[0].isalpha():
+                        if 'base64' in ot.path:
+                            continue
+                        else:
+                            targetFile = urljoin(baseURL, '/', ot.path)
                             replaceTo = f"url('{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}')"
-                        elif ot.path[0].isalpha():
-                            if 'base64' in ot.path:
-                                continue
-                            else:
-                                targetFile = urljoin(baseURL, '/', ot.path)
-                                replaceTo = f"url('{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}')"
-                        
-                        try:
-                            downloadAsset(targetFile, uid)
-                        except Exception:
-                            print(f"[Error] {targetFile} 다운로드 에러")
                     
-                    replacement = re.sub(regex, replaceTo, removed_comments)
+                    try:
+                        downloadAsset(targetFile, uid)
+                    except Exception:
+                        print(f"[Error] {targetFile} 다운로드 에러")
+                
+                replacement = re.sub(regex, replaceTo, removed_comments)
 
-                    content_w = open(file, 'w', encoding=encoding)
-                    content_w.write(replacement)
-                    content_w.close()
-            
-            content_r.close()
+                content_w = open(file, 'w', encoding=encoding)
+                content_w.write(replacement)
+                content_w.close()
+        
+        content_r.close()
 
 
 if __name__ == "__main__":
@@ -328,8 +330,8 @@ if __name__ == "__main__":
     
     # Archive Page
     args.url = "http://www.ppomppu.co.kr/zboard/view.php?id=issue&page=1&divpage=67&no=359100" # Test URL
+    REQ_URL = args.url
     archivePage(args.url, uid)
-    parseCSSURLs(args.url, uid)
 
     print(f"[Complete] Archived into directory - {uid}")
     # Save Meta JSON
