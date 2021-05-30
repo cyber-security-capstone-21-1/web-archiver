@@ -1,4 +1,6 @@
 import re
+import glob
+import chardet
 import json
 import uuid
 import requests
@@ -7,7 +9,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from urllib.request import urlretrieve, urlopen, Request, URLopener
 import time
 CURRENT_DIRECTORY = os.path.dirname(__file__)
@@ -54,15 +56,15 @@ def getContent(url) :
         return 'text/css'
     elif '.gif' in url :
         return "image/gif"
-    elif '.php' in url :
-        return "text/html"
     elif '.xml' in url :
         return "text/xml"
     elif '.ico' in url :
         return 'image/x-icon'
     lastText = url.split('/')[-1]
-    if '.' not in lastText or '.com' in lastText or '.co.kr' in lastText:
-        return "text/html"
+    # 루리웹의 경우 /234135 인 이미지 파일 존재
+    if not 'ruliweb' in url :
+        if '.' not in lastText or '.com' in lastText or '.co.kr' in lastText:
+            return "text/html"
     # 403 방지
     headers = {'User-Agent': 'Mozilla/5.0'}
     req = Request(url, headers=headers)
@@ -105,8 +107,8 @@ def getContentType(uri):
 
 
 def downloadAsset(uri, dirname, contentType):
-    if contentType == 'text/javascript':
-        return
+    # if contentType == 'text/javascript':
+    #     return
     down = time.time()
     tUrl = uri
     o = urlparse(tUrl)
@@ -157,13 +159,24 @@ def downloadAsset(uri, dirname, contentType):
                         print(type(e).__name__,'헤더 붙여도' , tUrl)
                         tUrl = tUrl.replace('www.', '')
                         tUrl = tUrl.replace('http:', 'https:')
-                        filename, headers = opener.retrieve(tUrl, targetFile)
+                        opener.retrieve(tUrl, targetFile)
                         print(f"[Retrieved3] {targetFile}", time.time() - down)
                         ret_time += time.time() - down
                     except Exception as e:
-                        print(type(e).__name__ ,'https:// 에 www 제외', tUrl)
-                        pass
-
+                        print(type(e).__name__, 'https:// 에 www 제외', tUrl)
+                        if 'bobae' in tUrl : #보배 드림 image 만을 위한 처리 우선은 이렇게 임시방편
+                            try :
+                                tUrl = tUrl.replace('//', '//image.')
+                                opener.retrieve(tUrl, targetFile)
+                                print(f"[Retrieved4] 보배드림 image {targetFile}", time.time() - down)
+                            except :
+                                print(type(e).__name__, 'image 처리도 실패', tUrl)
+                                pass
+                        return
+            finally:
+                if contentType == 'text/css':
+                    global args
+                    parseCSSURLs(targetFile, args.url, dirname)
     else:
         pass
 
@@ -213,7 +226,7 @@ def archivePage(url, dirname):
                 if len(ot.netloc) > 0:
                     # 절대 경로
                     downloadAsset(url, dirname, contentType)
-                    replaceTo = f"url('.{ot.path}')"
+                    replaceTo = f".{ot.path}"
                 else:
                     # 상대 경로
                     if ot.path.startswith("./"):
@@ -226,7 +239,7 @@ def archivePage(url, dirname):
                                     downloadAsset(f"http://{o.netloc}{o.path}{ot.path.replace('./', '')}", dirname, contentType)
                                 except Exception:
                                     print(f"{o.netloc}{o.path}{ot.path.replace('./', '')} 다운로드 에러")
-                        replaceTo = f"url('{ot.path}')"
+                        replaceTo = f"{ot.path}"
                     elif ot.path.startswith("../"):
                         count = ot.path.count("../")
                         try:
@@ -239,7 +252,7 @@ def archivePage(url, dirname):
                                     dirname, contentType)
                             except Exception:
                                 print(f"{o.netloc}{o.path.split('/')[:-count]}{ot.path.replace('../', '')} 다운로드 에러")
-                        replaceTo = f"url('{o.path.split('/')[:-count]}')"
+                        replaceTo = f"{o.path.split('/')[:-count]}"
                     else:
                         try:
                             downloadAsset(f"https://{o.netloc}{ot.path}", dirname, contentType)
@@ -248,26 +261,26 @@ def archivePage(url, dirname):
                                 downloadAsset(f"http://{o.netloc}{ot.path}", dirname, contentType)
                             except Exception:
                                 print(f"{o.netloc}{ot.path} 다운로드 에러")
-                        replaceTo = f"url('.{ot.path}')"
+                        replaceTo = f".{ot.path}"
 
-                text = re.sub(styleRegex, replaceTo, text)
+                text = text.replace(url, replaceTo)
                 if 'style' in style.attrs:
                     style["style"] = text
                 elif 'poster' in style.attrs:
                     style["poster"] = text
-                # else:
-                #     style.string = text
+                else:
+                    style.string = text
 
     print('\n[Notice] 링크 처리 시작')
     # href, src 속성 처리
     for idx, parseType in enumerate([hrefs, srcs]):
         for data in parseType:
-
             if idx == 0:
                 tLink = data["href"]
             elif idx == 1:
                 tLink = data["src"]
-
+            if data.name == 'iframe' :
+                continue
             if idx == 0 and len(data["href"]) == 0:
                 continue
             if data.has_attr('data'):
@@ -277,6 +290,8 @@ def archivePage(url, dirname):
                     tLink = str(data['data'])
 
             ot = urlparse(tLink)
+            if 'img/family' in tLink:
+                print("sdf")
             # android-app, javascript 등의 프로토콜은 생략
             if ot.scheme in ["http", "https", ""]:
                 if len(ot.netloc) == 0:
@@ -313,17 +328,34 @@ def archivePage(url, dirname):
                     # idx 4부터 해당하는 mimeTypes만 허용
                     contentType = getContentType(tLink)
                     if contentType in mimeTypes[4:]:
-                        downloadAsset(tLink, dirname, contentType)
-                except Exception:
-                    continue
+                        if '.css' in ot.path and ot.__getattribute__('query') :
+                            tLink = f"tLink?{ot.__getattribute__('query')}"
+                            downloadAsset(tLink, dirname, contentType)
+                        else:
+                            downloadAsset(tLink, dirname, contentType)
+                except Exception as e:
+                    print(type(e).__name__)
+                    pass
 
             ot = urlparse(tLink)
+
+            #네이트판 src
+            tmp = ot.path
+            while 'https://' in tmp :
+                tmp = tmp.split('https://')[-1]
+
             if idx == 0:
-                data["href"] = f".{ot.path}"
+                if '.css' in ot.path and ot.__getattribute__('query') :
+                    data["href"] = f".{ot.path}?{ot.query}"
+                else :
+                    data["href"] = f".{ot.path}"
             elif idx == 1:
                 if 'youtube' in ot.netloc:
                     continue
-                data["src"] = f".{ot.path}"
+                if ot.path != tmp :
+                    data["src"] = f"./{'/'.join(tmp.split('/')[1:])}"
+                else :
+                    data["src"] = f".{ot.path}"
 
     # script 콘텐츠 처리
     print('\n[Notice] 스크립트 처리 시작')
@@ -370,6 +402,180 @@ def archivePage(url, dirname):
         f.write(str(soup))
 
 
+# def parseCSSURLs(file, url, uid):
+#     print("CSS URL ", file)
+#     o = urlparse(url)
+#     styleRegex = 'url\((.*?)\)'
+#     importRegex = r"@import\s*(url)?\s*\(?([^;]+?)\)?;"
+#
+#     basePath = '/'.join(file.split(uid)[-1].split('/')[:-1])
+#     baseURL = f"{o.scheme}://{o.netloc}{basePath}"
+#     filename, extension = os.path.splitext(file)
+#     if extension == '.css':
+#         content_r = open(file, 'rb')
+#         encoding = chardet.detect(content_r.read())['encoding']
+#         content_r.close()
+#         content_r = open(file, 'rt', encoding=encoding)
+#
+#
+#         removed_comments = re.sub(r'\/\*.*?\*\/', '', content_r.read())
+#
+#         for regex in [importRegex, styleRegex]:
+#             for item in re.findall(regex, removed_comments):
+#                 try :
+#                     item = item.strip("'").strip('"')
+#                 except Exception as e :
+#                     print(e)
+#                 ot = urlparse(item)
+#
+#                 # javascript, fragment 처리 불필요
+#                 if ot.scheme == "javascript" or (ot.netloc == '' and ot.path == ''):
+#                     continue
+#
+#                 if len(ot.netloc) > 0:
+#                     # 절대 경로
+#                     targetFile = url
+#                     replaceTo = f"url('{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}')"
+#                 else:
+#                     # 상대 경로
+#                     targetFile = ''
+#                     if ot.path.startswith("./"):
+#                         parsed = ot.path.split('/')
+#                         parsed = '/'.join(parsed[1:])
+#                         targetFile = f"{baseURL}/{parsed}"
+#                         replaceTo = f"url('{ot.path}')"
+#                     elif ot.path.startswith("../"):
+#                         url2 = baseURL[::-1]
+#                         idx = url2.index('/')
+#                         targetFile = baseURL[:len(baseURL) - idx] + ot.path.replace('../', '')
+#                         replaceTo = f"url('{ot.path}')"
+#                     elif ot.path.startswith("/"):
+#                         targetFile = urljoin(baseURL, ot.path)
+#                         replaceTo = f"url('{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}')"
+#                     elif ot.path[0].isalpha():
+#                         if 'base64' in ot.path:
+#                             continue
+#                         else:
+#                             targetFile = urljoin(baseURL, '/', ot.path)
+#                             replaceTo = f"url('{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}')"
+#
+#                     try:
+#                         contentType = getContentType(targetFile)
+#                         downloadAsset(targetFile, uid, contentType)
+#                     except Exception:
+#                         print("down error")
+#                         continue
+#
+#                 print('이거를 : ',item)
+#                 print('이걸로 바꿔 : ',replaceTo)
+#                 replacement = re.sub(item, replaceTo, removed_comments)
+#
+#                 content_w = open(file, 'w', encoding=encoding)
+#                 content_w.write(replacement)
+#                 content_w.close()
+#
+#             content_r.close()
+
+
+def parseCSSURLs(file, url, uid):
+    print("CSS URL ", file)
+    o = urlparse(url)
+    file = file.replace('//', '/')
+    styleRegex = 'url\((.*?)\)'
+    importRegex = r"@import\s*(url)?\s*\(?([^;]+?)\)?;"
+
+    basePath = '/'.join(file.split(uid)[-1].split('/')[:-1])
+    baseURL = f"{o.scheme}://{o.netloc}{basePath}"
+    filename, extension = os.path.splitext(file)
+    if extension == '.css':
+        content_r = open(file, 'rb')
+        encoding = chardet.detect(content_r.read())['encoding']
+        content_r.close()
+        content_r = open(file, 'rt', encoding=encoding)
+        removed_comments = re.sub(r'\/\*.*?\*\/', '', content_r.read())
+        content_r.close()
+
+        for regex in [importRegex, styleRegex]:
+            for item in re.findall(regex, removed_comments):
+                try :
+                    item = item.strip("'").strip('"')
+                except Exception as e :
+                    print(e)
+                    continue
+                ot = urlparse(item)
+
+                # javascript, fragment 처리 불필요
+                if ot.scheme == "javascript" or (ot.netloc == '' and ot.path == ''):
+                    continue
+                if len(ot.netloc) > 0:
+                    # 절대 경로
+                    # 인벤 처리
+                    # if 'static' in item and not 'http' in item:
+                    #     replaceTo = "https:" + item
+                    # else:
+                    #     replaceTo = item
+
+
+                    replaceTo = f"{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}"
+                    targetFile = item
+                    try:
+                        contentType = getContentType(targetFile)
+                        downloadAsset(targetFile, uid, contentType)
+                    except Exception:
+                        if 'static' in item and not 'http' in item:
+                            replaceTo = "https:" + item
+                        else:
+                            replaceTo = item
+                        pass
+                else:
+                    # 상대 경로
+                    targetFile = ''
+                    if ot.path.startswith("./"):
+                        parsed = ot.path.split('/')
+                        parsed = '/'.join(parsed[1:])
+                        targetFile = f"{baseURL}/{parsed}"
+                        replaceTo = f"{ot.path}"
+                    elif ot.path.startswith("../"):
+                        url2 = baseURL[::-1]
+                        idx = url2.index('/')
+                        targetFile = baseURL[:len(baseURL) - idx] + ot.path.replace('../', '')
+                        replaceTo = f"{ot.path}"
+                    elif ot.path.startswith("//"):
+                        targetFile = ot.path
+                        replaceTo = f""
+                    elif ot.path.startswith("/"):
+                        print(ot.path)
+                        targetFile = urljoin(baseURL, ot.path)
+                        replaceTo = f"{'../' * (len(basePath.split('/')[1:]))}{ot.path[1:]}"
+                    elif ot.path[0].isalpha():
+                        if 'base64' in ot.path:
+                            continue
+                        else:
+                            targetFile = baseURL + ot.path
+                            splitted = file.split(uid)[-1]
+                            splitted = splitted.split('/')
+                            count = len(splitted)-1
+                            # replaceTo = f"{'../' * (len(basePath.split('/')[1:]))}{ot.path}"
+                            if count :
+                                replaceTo = f"{'../' * (count)}{ot.path}"
+                            else :
+                                replaceTo = f"./{ot.path}"
+
+
+                    try:
+                        contentType = getContentType(targetFile)
+                        downloadAsset(targetFile, uid, contentType)
+                    except Exception:
+                        print("down error")
+                        pass
+
+                # removed_comments = re.sub(item, replaceTo, removed_comments)
+                removed_comments = removed_comments.replace(item, replaceTo)
+
+            content_w = open(file, 'w', encoding=encoding)
+            content_w.write(removed_comments)
+            content_w.close()
+
 if __name__ == "__main__":
     """
     페이지를 특정 시점에 스냅샷하여 보존합니다.
@@ -381,38 +587,48 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Create Unique Archive ID
+    # Archive Page
+    test_arr = ["https://www.ilbe.com/view/11345118798",  # 0 이상없음
+                "https://www.inven.co.kr/webzine/news/?news=256401",
+                "https://www.instiz.net/name/42841474?page=1&category=1&k=%EC%9D%B8%EB%B2%A4&stype=9",  # 2
+                "https://hygall.com/385745579", # 잘됨
+                "https://www.fmkorea.com/best/3626647809",  # 4 ip 차단 테스트 불가능##########################
+                "https://www.dogdrip.net/326822283", #왜 검은색이지
+                "https://gall.dcinside.com/board/view/?id=dcbest&no=6126",  # 6 댓글제외 잘나옴###############
+                "https://www.clien.net/service/board/news/16170716",  # css에서 백그라운드 색 블랙으로 돼있음####
+                "https://www.bobaedream.co.kr/view?code=best&No=424524&m=1",  # 8 image. 으로 시작하는 url들 다운로드 처리  잘됨. ######
+                "https://www.82cook.com/entiz/read.php?num=3225141",  # 9 다 잘되는데 깨지는 iframe이 들어옴 ###
+                "https://www.ygosu.com/community/best_article/yeobgi/1825320/?type=daily&sdate=2021-05-25&frombest=Y", # 10 댓글제외 잘됨
+                "http://www.todayhumor.co.kr/board/view.php?table=bestofbest&no=440469", # 11 댓글제외 잘나옴 #
+                "https://bbs.ruliweb.com/community/board/300143/read/52187725",  # 12 화면 까맣게 나옴
+                "http://www.ppomppu.co.kr/zboard/view.php?id=issue&page=1&divpage=67&no=359100", # 잘됨
+                "https://m.pann.nate.com/talk/359435076?currMenu=search&page=1&q=%EC%9A%B0%EB%A6%AC%20%EC%95%88%EB%85%95%EC%9E%90%EB%91%90%EC%95%BC",  # 14 잘됨
+                "http://mlbpark.donga.com/mp/b.php?p=1&b=kbotown&id=202105250055338693&select=&query=&user=&site=&reply=&source=&pos=&sig=h4aRSY-1k3HRKfX2h6j9Sg-A6hlq",  # 15 잘됨
+                "https://www.instiz.net/pt/6978378", # 16
+                "https://www.bobaedream.co.kr/view?code=freeb&No=2293907"] # 17
+
+    args.url = test_arr[12]
+
+    start = time.time()
     uid = str(uuid.uuid4())
     if not os.path.exists(os.path.join(CURRENT_DIRECTORY, uid)):
         os.makedirs(uid)
     else:
         uid = str(uuid.uuid4())
 
-    # Archive Page
-    # args.url = "http://www.ppomppu.co.kr/zboard/view.php?id=issue&page=1&divpage=67&no=359100" # Test URL
-    # args.url = "https://www.bobaedream.co.kr/view?code=freeb&No=2293907"
-    test_arr = ["https://www.ilbe.com/view/11345118798",  # 0 이상없음
-                "https://www.inven.co.kr/webzine/news/?news=256401",
-                "https://www.instiz.net/name/42841474?page=1&category=1&k=%EC%9D%B8%EB%B2%A4&stype=9",  # 2
-                "https://hygall.com/385745579",
-                "https://www.fmkorea.com/best/3626647809",  # 4
-                "https://www.dogdrip.net/326822283",
-                "https://gall.dcinside.com/board/view/?id=dcbest&no=6126",  # 6
-                "https://www.clien.net/service/board/news/16170716",
-                "https://www.bobaedream.co.kr/view?code=best&No=424524&m=1",  # 8
-                "https://www.82cook.com/entiz/read.php?num=3225141",  # css 다운받긴 하는데 적용이 안됨
-                "https://www.ygosu.com/community/best_article/yeobgi/1825320/?type=daily&sdate=2021-05-25&frombest=Y", # 10
-                "http://www.todayhumor.co.kr/board/view.php?table=bestofbest&no=440469",
-                "https://bbs.ruliweb.com/community/board/300143/read/52187725",  # 12
-                "http://www.ppomppu.co.kr/zboard/view.php?id=problem&page=1&divpage=21&no=151609",
-                "https://m.pann.nate.com/talk/359435076?currMenu=search&page=1&q=%EC%9A%B0%EB%A6%AC%20%EC%95%88%EB%85%95%EC%9E%90%EB%91%90%EC%95%BC",  # 14
-                "https://cafe.naver.com/geobuk2/1022437",  # 안됨
-                "http://mlbpark.donga.com/mp/b.php?p=1&b=kbotown&id=202105250055338693&select=&query=&user=&site=&reply=&source=&pos=&sig=h4aRSY-1k3HRKfX2h6j9Sg-A6hlq"]  # 16
-
-    args.url = test_arr[1]
-
-    start = time.time()
     archivePage(args.url, uid)
+
+    # for i in test_arr :
+    #
+    #     # Create Unique Archive ID
+    #     uid = str(uuid.uuid4())
+    #     if not os.path.exists(os.path.join(CURRENT_DIRECTORY, uid)):
+    #         os.makedirs(uid)
+    #     else:
+    #         uid = str(uuid.uuid4())
+    #
+    #     args.url = i
+    #     archivePage(args.url, uid)
 
     j = open('memo.txt', 'a', encoding='UTF-8')
     j.write(f'\n{args.url}')
@@ -422,7 +638,6 @@ if __name__ == "__main__":
     j.close()
     print('걸린시간 : ', time.time() - start, '다운로드 걸린 시간 : ', ret_time)
     print('get content :' , get, 'retrive : ', ret)
-
 
     print(f"[Complete] Archived into directory - {uid}")
     # Save Meta JSON
